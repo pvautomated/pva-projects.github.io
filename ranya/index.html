@@ -30,12 +30,14 @@
   table { border-collapse:collapse; width:100%; font-size:13px; }
   th, td { padding:6px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
   th { position:sticky; top:0; background:var(--accent2); color:#1d4ed8; }
+  td.ok, td.bad { font-weight:600; }
+  td.ok { color:var(--ok); } td.bad { color:var(--bad); }
   .note { color:var(--muted); font-size:12px; margin-top:6px; }
-  .tabs { display:flex; gap:8px; margin-top:16px; }
 </style>
 </head>
 <body>
 <h1>HS Code Lookup Tool</h1>
+
 
 <div class="grid">
   <div class="card">
@@ -67,10 +69,6 @@
 </div>
 
 <div id="stats"></div>
-<div class="tabs">
-  <button id="tabM" class="sec">Matched rows</button>
-  <button id="tabU" class="sec">Not found</button>
-</div>
 <div class="wrap" id="out"></div>
 <div class="note" id="note"></div>
 
@@ -100,7 +98,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 <script>
 const $ = id => document.getElementById(id);
 const S = { src:{data:[],cols:[],wb:null} };
-let matched = [], unmatched = [], view = 'M';
+let results = [];
 
 function setup(which, fileEl, sheetEl, colEl) {
   fileEl.addEventListener('change', async e => {
@@ -139,50 +137,52 @@ $('run').addEventListener('click', () => {
   const mode = $('mode').value, ci = $('ci').checked, tr = $('trim').checked;
   const norm = v => { let s = String(v ?? ''); if (tr) s = s.trim(); if (ci) s = s.toLowerCase(); return s; };
   const sc = $('srcCol').value;
-
-  // Unique, non-empty lookup values
-  const original = {};
-  lkLines().forEach(l => { const k = norm(l); if (k !== '' && !(k in original)) original[k] = l.trim(); });
-  const vals = Object.keys(original);
+  const lines = lkLines().filter(l => l.trim() !== '');   // duplicates are kept
 
   const srcKeys = S.src.data.map(r => norm(r[sc]));
   const index = new Map();
   if (mode === 'exact') srcKeys.forEach((k, i) => { if (!index.has(k)) index.set(k, []); index.get(k).push(i); });
-
-  matched = []; unmatched = [];
-  for (const v of vals) {
+  const cache = new Map();
+  const find = k => {
+    if (cache.has(k)) return cache.get(k);
     let hits = [];
-    if (mode === 'exact') hits = index.get(v) || [];
-    else srcKeys.forEach((k, i) => { if (mode === 'contains' ? k.includes(v) : k.startsWith(v)) hits.push(i); });
-    if (hits.length) hits.forEach(i => matched.push({ 'Lookup value': original[v], ...S.src.data[i] }));
-    else unmatched.push({ 'Lookup value': original[v] });
+    if (mode === 'exact') hits = index.get(k) || [];
+    else srcKeys.forEach((s, i) => { if (mode === 'contains' ? s.includes(k) : s.startsWith(k)) hits.push(i); });
+    cache.set(k, hits); return hits;
+  };
+  const blank = Object.fromEntries(S.src.cols.map(c => [c, '']));
+
+  results = []; let found = 0, missing = 0, matchedRows = 0;
+  for (const l of lines) {
+    const hits = find(norm(l));
+    if (hits.length) { found++; matchedRows += hits.length; hits.forEach(i => results.push({ 'Lookup value': l.trim(), 'Status': 'Found', ...S.src.data[i] })); }
+    else { missing++; results.push({ 'Lookup value': l.trim(), 'Status': 'Not found', ...blank }); }
   }
-  const found = vals.length - unmatched.length;
   $('stats').innerHTML =
-    `<span>Lookup values: <b>${vals.length}</b></span>` +
+    `<span>Lookup values: <b>${lines.length}</b></span>` +
     `<span class="ok">Found: <b>${found}</b></span>` +
-    `<span class="bad">Not found: <b>${unmatched.length}</b></span>` +
-    `<span>Matched rows: <b>${matched.length}</b></span>`;
+    `<span class="bad">Not found: <b>${missing}</b></span>` +
+    `<span>Matched rows: <b>${matchedRows}</b></span>`;
   $('dl').disabled = false;
-  view = 'M'; render();
+  render();
 });
 
 $('tabM').onclick = () => { view = 'M'; render(); };
 $('tabU').onclick = () => { view = 'U'; render(); };
 
 function render() {
-  const data = view === 'M' ? matched : unmatched, LIMIT = 500;
-  if (!data.length) { $('out').innerHTML = '<div style="padding:16px;color:var(--muted)">No rows.</div>'; $('note').textContent = ''; return; }
-  const cols = Object.keys(data[0]);
+  const LIMIT = 1000;
+  if (!results.length) { $('out').innerHTML = '<div style="padding:16px;color:var(--muted)">No rows.</div>'; $('note').textContent = ''; return; }
+  const cols = Object.keys(results[0]);
   $('out').innerHTML = '<table><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' +
-    data.slice(0, LIMIT).map(r => '<tr>' + cols.map(c => `<td>${esc(r[c] ?? '')}</td>`).join('') + '</tr>').join('') + '</table>';
-  $('note').textContent = data.length > LIMIT ? `Showing first ${LIMIT} of ${data.length} rows. Download for the full list.` : '';
+    results.slice(0, LIMIT).map(r => '<tr>' + cols.map(c =>
+      `<td class="${c === 'Status' ? (r[c] === 'Found' ? 'ok' : 'bad') : ''}">${esc(r[c] ?? '')}</td>`).join('') + '</tr>').join('') + '</table>';
+  $('note').textContent = results.length > LIMIT ? `Showing first ${LIMIT} of ${results.length} rows. Download for the full list.` : '';
 }
 
 $('dl').addEventListener('click', () => {
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(matched), 'Matched');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(unmatched), 'Not found');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(results), 'Results');
   XLSX.writeFile(wb, 'lookup_results.xlsx');
 });
 </script>
